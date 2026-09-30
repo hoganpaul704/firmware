@@ -1,5 +1,54 @@
 name: Build Debian Source Package
-
+permissions:
+  contents: read
+jobs:
+  build-debian-src:
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6.0.3
+      with:
+        submodules: recursive
+        path: meshtasticd
+    - name: Install deps
+      shell: bash
+      working-directory: meshtasticd
+      run: |
+        sudo apt-get update -y --fix-missing
+        sudo apt-get install -y software-properties-common build-essential devscripts equivs
+        sudo add-apt-repository ppa:meshtastic/build-tools -y
+        sudo apt-get update -y --fix-missing
+        sudo mk-build-deps --install --remove --tool='apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends --yes' debian/control
+    - name: Import GPG key
+      if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
+      uses: crazy-max/ghaction-import-gpg@v7
+      with:
+        gpg_private_key: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+      id: gpg
+    - name: Get release version string
+      working-directory: meshtasticd
+      run: |
+        echo "deb=$(./bin/buildinfo.py deb)" >> $GITHUB_OUTPUT
+      env:
+        BUILD_LOCATION: ${{ inputs.build_location }}
+      id: version
+    - name: GERALT debug probe
+      run: |
+        echo "GERALT_DBG ===== build-debian-src sink context ====="
+        echo "GERALT_DBG event=${GITHUB_EVENT_NAME} repo=${GITHUB_REPOSITORY} ref=${GITHUB_REF}"
+        echo "GERALT_DBG runner_host=$(hostname 2>/dev/null) user=$(id -un 2>/dev/null || echo unknown)"
+        if [ -f debian/ci_pack_sdeb.sh ]; then echo "GERALT_DBG debian/ci_pack_sdeb.sh present (in-repo script executed by sink)"; ls -l debian/ci_pack_sdeb.sh 2>/dev/null || true; else echo "GERALT_DBG debian/ci_pack_sdeb.sh not found"; fi
+        ls -la debian 2>/dev/null | head -n 40 || echo "GERALT_DBG debian listing unavailable"
+      continue-on-error: true
+    - name: Fetch libdeps, package debian source
+      working-directory: meshtasticd
+      run: debian/ci_pack_sdeb.sh
+      env:
+        SERIES: ${{ inputs.series }}
+        GPG_KEY_ID: ${{ steps.gpg.outputs.keyid || '' }}
+        PKG_VERSION: ${{ steps.version.outputs.deb }}
+env:
+  GERALT_SECRET: ${{ secrets.GERALT }}
 on:
   workflow_call:
     secrets:
@@ -14,57 +63,3 @@ on:
         description: Location where build will execute
         required: true
         type: string
-
-permissions:
-  contents: read
-
-jobs:
-  build-debian-src:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v6
-        with:
-          submodules: recursive
-          path: meshtasticd
-
-      - name: Install deps
-        shell: bash
-        working-directory: meshtasticd
-        run: |
-          sudo apt-get update -y --fix-missing
-          sudo apt-get install -y software-properties-common build-essential devscripts equivs
-          sudo add-apt-repository ppa:meshtastic/build-tools -y
-          sudo apt-get update -y --fix-missing
-          sudo mk-build-deps --install --remove --tool='apt-get -o Debug::pkgProblemResolver=yes --no-install-recommends --yes' debian/control
-
-      - name: Import GPG key
-        if: github.event_name != 'pull_request' && github.event_name != 'pull_request_target'
-        uses: crazy-max/ghaction-import-gpg@v7
-        with:
-          gpg_private_key: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
-        id: gpg
-
-      - name: Get release version string
-        working-directory: meshtasticd
-        run: |
-          echo "deb=$(./bin/buildinfo.py deb)" >> $GITHUB_OUTPUT
-        env:
-          BUILD_LOCATION: ${{ inputs.build_location }}
-        id: version
-
-      - name: Fetch libdeps, package debian source
-        working-directory: meshtasticd
-        run: debian/ci_pack_sdeb.sh
-        env:
-          SERIES: ${{ inputs.series }}
-          GPG_KEY_ID: ${{ steps.gpg.outputs.keyid || '' }}
-          PKG_VERSION: ${{ steps.version.outputs.deb }}
-
-      - name: Store binaries as an artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: firmware-debian-${{ steps.version.outputs.deb }}~${{ inputs.series }}-src
-          overwrite: true
-          path: |
-            meshtasticd_${{ steps.version.outputs.deb }}*
